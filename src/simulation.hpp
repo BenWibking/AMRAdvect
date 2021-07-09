@@ -53,7 +53,8 @@
 #include "CheckNaN.hpp"
 #include "math_impl.hpp"
 
-#define USE_YAFLUXREGISTER
+// this is set in CMakeLists.txt
+//#define USE_YAFLUXREGISTER
 
 // Main simulation class; solvers should inherit from this
 template <typename problem_t> class AMRSimulation : public amrex::AmrCore

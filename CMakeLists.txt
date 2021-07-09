@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake ${PROJECT_SOURCE_DIR}/extern/amrex/Tools/CMake)
+set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/extern/amrex/Tools/CMake)
 include(CTest)
 
 set(AMReX_SPACEDIM 2 CACHE STRING "" FORCE)
@@ -35,5 +35,12 @@ if(AMReX_GPU_BACKEND MATCHES "CUDA")
   endif(CMAKE_VERSION VERSION_LESS 3.20)
 endif(AMReX_GPU_BACKEND MATCHES "CUDA")
 
-add_subdirectory(${QuokkaCode_SOURCE_DIR}/extern/amrex ${QuokkaCode_BINARY_DIR}/amrex)
-add_subdirectory(${QuokkaCode_SOURCE_DIR}/src ${QuokkaCode_BINARY_DIR}/src)
+# set which FluxRegister to use
+set(AMRADVECT_USE_YAFLUXREGISTER ON)
+
+if (AMRADVECT_USE_YAFLUXREGISTER)
+  add_compile_definitions(USE_YAFLUXREGISTER)
+endif()
+
+add_subdirectory(${PROJECT_SOURCE_DIR}/extern/amrex ${PROJECT_BINARY_DIR}/amrex)
+add_subdirectory(${PROJECT_SOURCE_DIR}/src ${PROJECT_BINARY_DIR}/src)
