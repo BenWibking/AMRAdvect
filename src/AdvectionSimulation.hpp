@@ -140,7 +140,7 @@ void AdvectionSimulation<problem_t>::advanceSingleTimestepAtLevel(int lev, amrex
 
 	// check state validity
 	AMREX_ASSERT(!state_old_[lev].contains_nan(0, state_old_[lev].nComp()));
-	AMREX_ASSERT(!state_old_[lev].contains_nan()); // check ghost cells
+	//AMREX_ASSERT(!state_old_[lev].contains_nan()); // check ghost cells
 
 	// get geometry (used only for cell sizes)
 	auto const &geomLevel = geom[lev];
