@@ -665,7 +665,7 @@ void AMRSimulation<problem_t>::fillBoundaryConditions(amrex::MultiFab &S_filled,
 	// ensure that there are no NaNs (can happen when domain boundary filling is
 	// unimplemented or malfunctioning)
 	AMREX_ASSERT(!S_filled.contains_nan(0, S_filled.nComp()));
-	AMREX_ASSERT(!S_filled.contains_nan()); // check ghost zones
+	//AMREX_ASSERT(!S_filled.contains_nan()); // check ghost zones
 }
 
 // Compute a new multifab 'mf' by copying in state from given data and filling
