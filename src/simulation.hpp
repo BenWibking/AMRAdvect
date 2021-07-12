@@ -371,7 +371,7 @@ template <typename problem_t> void AMRSimulation<problem_t>::evolve()
 			       << " TIME = " << cur_time << " DT = " << dt_[0]
 			       << " Sum(rho) = " << sum_rho
 			       << " conservation error = " << conservation_error << std::endl;
-		if (std::abs(conservation_error) > 1.0e-14) {
+		if (std::abs(conservation_error) > 1.0e-12) {
 			amrex::Print() << "stopping due to conservation error!" << std::endl;
 			break;
 		}
