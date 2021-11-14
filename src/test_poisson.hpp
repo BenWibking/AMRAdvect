@@ -10,13 +10,17 @@
 ///
 
 // external headers
+#include "AMReX_Geometry.H"
+#include "AMReX_LO_BCTYPES.H"
+#include "AMReX_MLMG.H"
+#include "AMReX_MLPoisson.H"
+#include "AMReX_MultiFab.H"
+#include <AMReX.H>
 
 // internal headers
 
-#include "linear_advection.hpp"
-
 // function definitions
-template <typename problem_t> void write_density(LinearAdvectionSystem<problem_t> &advection_system);
-int problem_main();
+template <typename F> void fillBoundaryCells(amrex::Geometry geom, amrex::MultiFab &phi, F &&user_f);
+auto problem_main() -> int;
 
 #endif // TEST_ADVECTION_HPP_
