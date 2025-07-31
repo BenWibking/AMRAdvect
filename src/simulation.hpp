@@ -30,6 +30,7 @@
 #include "AMReX_FArrayBox.H"
 #include "AMReX_FillPatchUtil.H"
 #include "AMReX_FluxRegister.H"
+#include "AMReX_EdgeFluxRegister.H"
 #include "AMReX_GpuControl.H"
 #include "AMReX_GpuQualifiers.H"
 #include "AMReX_INT.H"
@@ -54,6 +55,7 @@
 #include "CheckNaN.hpp"
 #include "math_impl.hpp"
 #include "memory"
+#include "vector_system.hpp"
 
 // this is set in CMakeLists.txt
 //#define USE_YAFLUXREGISTER
@@ -100,7 +102,10 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 
 	virtual void computeMaxSignalLocal(int level) = 0;
 	virtual void setInitialConditionsAtLevel(int level) = 0;
+	virtual void setInitialConditionsVectorAtLevel(int level) = 0;
 	virtual void advanceSingleTimestepAtLevel(int lev, amrex::Real time, amrex::Real dt_lev,
+						  int iteration, int ncycle) = 0;
+	virtual void advanceVectorTimestepAtLevel(int lev, amrex::Real time, amrex::Real dt_lev,
 						  int iteration, int ncycle) = 0;
 	virtual void computeAfterTimestep() = 0;
 
@@ -139,10 +144,25 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 	void AverageDownTo(int crse_lev);
 	void timeStepWithSubcycling(int lev, amrex::Real time, int iteration);
 
+	// Vector field AMR utility functions
+	void fillBoundaryConditionsVector(amrex::MultiFab &S_filled, amrex::MultiFab &state, int lev,
+					  amrex::Real time, int idim);
+	void FillPatchVector(int lev, amrex::Real time, amrex::MultiFab &mf, int idim, int icomp, int ncomp);
+	void FillCoarsePatchVector(int lev, amrex::Real time, amrex::MultiFab &mf, int idim, int icomp, int ncomp);
+	void GetDataVector(int lev, amrex::Real time, amrex::Vector<amrex::MultiFab *> &data,
+			   amrex::Vector<amrex::Real> &datatime, int idim);
+	void AverageDownVector();
+	void AverageDownToVector(int crse_lev);
+
 	void incrementFluxRegisters(amrex::MFIter &mfi, amrex::YAFluxRegister *fr_as_crse,
 				    amrex::YAFluxRegister *fr_as_fine,
 				    std::array<amrex::FArrayBox, AMREX_SPACEDIM> &fluxArrays,
 				    int lev, amrex::Real dt_lev);
+
+	void incrementVectorFluxRegisters(amrex::MFIter &mfi, amrex::EdgeFluxRegister *fr_as_crse,
+					  amrex::EdgeFluxRegister *fr_as_fine,
+					  std::array<amrex::FArrayBox, AMREX_SPACEDIM> &edgeFluxArrays,
+					  int lev, amrex::Real dt_lev);
 
 	// boundary condition
 	AMREX_GPU_DEVICE static void
@@ -155,6 +175,7 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 	// I/O functions
 	[[nodiscard]] auto PlotFileName(int lev) const -> std::string;
 	[[nodiscard]] auto PlotFileMF() const -> amrex::Vector<const amrex::MultiFab *>;
+	[[nodiscard]] auto PlotFileVectorMF() const -> amrex::Vector<amrex::Vector<const amrex::MultiFab *>>;
 	void WritePlotFile() const;
 	void WriteCheckpointFile() const;
 	void ReadCheckpointFile();
@@ -164,6 +185,10 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 	amrex::Vector<amrex::MultiFab> state_old_;
 	amrex::Vector<amrex::MultiFab> state_new_;
 	amrex::Vector<amrex::MultiFab> max_signal_speed_; // needed to compute CFL timestep
+
+	// vector field state arrays (face-centered)
+	amrex::Vector<std::array<amrex::MultiFab, AMREX_SPACEDIM>> vector_state_old_;
+	amrex::Vector<std::array<amrex::MultiFab, AMREX_SPACEDIM>> vector_state_new_;
 
 	// flux registers: store fluxes at coarse-fine interface for synchronization
 	// this will be sized "nlevs_max+1"
@@ -177,11 +202,16 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 	amrex::Vector<std::unique_ptr<amrex::FluxRegister>> flux_reg_;
 #endif // USE_YAFLUXREGISTER
 
+	// edge flux registers for vector fields
+	amrex::Vector<std::unique_ptr<amrex::EdgeFluxRegister>> vector_flux_reg_;
+
 	// Nghost = number of ghost cells for each array
 	int nghost_ = 4;	   // PPM needs nghost >= 3, PPM+flattening needs nghost >= 4
 	int ncomp_ = NAN;	   // = number of components (conserved variables) for each array
 	int ncompPrimitive_ = NAN; // number of primitive variables
+	int nvcomp_ = VectorSystem<problem_t>::nvar_per_dim_; // number of components per dimension for vector field
 	amrex::Vector<std::string> componentNames_;
+	amrex::Vector<std::string> vectorComponentNames_;
 	bool areInitialConditionsDefined_ = false;
 
 	/// output parameters
@@ -218,7 +248,10 @@ void AMRSimulation<problem_t>::initialize(amrex::Vector<amrex::BCRec> &boundaryC
 	state_new_.resize(nlevs_max);
 	state_old_.resize(nlevs_max);
 	max_signal_speed_.resize(nlevs_max);
+	vector_state_new_.resize(nlevs_max);
+	vector_state_old_.resize(nlevs_max);
 	flux_reg_.resize(nlevs_max + 1);
+	vector_flux_reg_.resize(nlevs_max + 1);
 
 	boundaryConditions_ = boundaryConditions;
 
@@ -276,6 +309,7 @@ template <typename problem_t> void AMRSimulation<problem_t>::setInitialCondition
 		const amrex::Real time = 0.0;
 		InitFromScratch(time);
 		AverageDown();
+		AverageDownVector();
 
 		if (checkpointInterval_ > 0) {
 			WriteCheckpointFile();
@@ -428,6 +462,7 @@ void AMRSimulation<problem_t>::timeStepWithSubcycling(int lev, amrex::Real time,
 	tNew_[lev] += dt_[lev]; // critical that this is done *before* advanceAtLevel
 
 	advanceSingleTimestepAtLevel(lev, time, dt_[lev], iteration, nsubsteps[lev]);
+	advanceVectorTimestepAtLevel(lev, time, dt_[lev], iteration, nsubsteps[lev]);
 	++istep[lev];
 
 	if (Verbose()) {
@@ -448,9 +483,17 @@ void AMRSimulation<problem_t>::timeStepWithSubcycling(int lev, amrex::Real time,
 #else
 			flux_reg_[lev + 1]->Reflux(state_new_[lev], 1.0, 0, 0, ncomp_, geom[lev]);
 #endif // USE_YAFLUXREGISTER
+			
+			// reflux vector fields
+			if (vector_flux_reg_[lev + 1] != nullptr) {
+				for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+					vector_flux_reg_[lev + 1]->Reflux(vector_state_new_[lev][idim], 1.0, 0, 0, nvcomp_, geom[lev], idim);
+				}
+			}
 		}
 
 		AverageDownTo(lev); // average lev+1 down to lev
+		AverageDownToVector(lev); // average vector field lev+1 down to lev
 	}
 }
 
@@ -481,6 +524,31 @@ void AMRSimulation<problem_t>::incrementFluxRegisters(
 		}
 	}
 }
+
+template <typename problem_t>
+void AMRSimulation<problem_t>::incrementVectorFluxRegisters(
+    amrex::MFIter &mfi, amrex::EdgeFluxRegister *fr_as_crse, amrex::EdgeFluxRegister *fr_as_fine,
+    std::array<amrex::FArrayBox, AMREX_SPACEDIM> &edgeFluxArrays, int const lev,
+    amrex::Real const dt_lev)
+{
+	BL_PROFILE("AMRSimulation::incrementVectorFluxRegisters()");
+
+	if (do_reflux != 0) {
+		if (fr_as_crse != nullptr) {
+			AMREX_ASSERT(lev < finestLevel());
+			AMREX_ASSERT(fr_as_crse == vector_flux_reg_[lev + 1].get());
+			fr_as_crse->CrseAdd(mfi, {AMREX_D_DECL(&edgeFluxArrays[0], &edgeFluxArrays[1], &edgeFluxArrays[2])},
+					    geom[lev].CellSize(), dt_lev);
+		}
+
+		if (fr_as_fine != nullptr) {
+			AMREX_ASSERT(lev > 0);
+			AMREX_ASSERT(fr_as_fine == vector_flux_reg_[lev].get());
+			fr_as_fine->FineAdd(mfi, {AMREX_D_DECL(&edgeFluxArrays[0], &edgeFluxArrays[1], &edgeFluxArrays[2])},
+					    geom[lev].CellSize(), dt_lev);
+		}
+	}
+}
 #endif // USE_YAFLUXREGISTER
 
 // Make a new level using provided BoxArray and DistributionMapping and fill
@@ -500,6 +568,13 @@ void AMRSimulation<problem_t>::MakeNewLevelFromCoarse(int level, amrex::Real tim
 	state_old_[level].define(ba, dm, ncomp, nghost);
 	max_signal_speed_[level].define(ba, dm, 1, nghost);
 
+	// define vector field arrays (face-centered)
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		amrex::BoxArray ba_fc = amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim));
+		vector_state_new_[level][idim].define(ba_fc, dm, nvcomp_, nghost);
+		vector_state_old_[level][idim].define(ba_fc, dm, nvcomp_, nghost);
+	}
+
 	tNew_[level] = time;
 	tOld_[level] = time - 1.e200;
 
@@ -512,6 +587,10 @@ void AMRSimulation<problem_t>::MakeNewLevelFromCoarse(int level, amrex::Real tim
 		flux_reg_[level] = std::make_unique<amrex::FluxRegister>(
 		    ba, dm, refRatio(level - 1), level, ncomp_);
 #endif
+		// create vector field edge flux register
+		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
+		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
+		    refRatio(level - 1), level, nvcomp_);
 	}
 
 	FillCoarsePatch(level, time, state_new_[level], 0, ncomp);
@@ -534,12 +613,29 @@ void AMRSimulation<problem_t>::RemakeLevel(int level, amrex::Real time, const am
 	amrex::MultiFab old_state(ba, dm, ncomp, nghost);
 	amrex::MultiFab max_signal_speed(ba, dm, 1, nghost);
 
+	// create new vector field arrays
+	std::array<amrex::MultiFab, AMREX_SPACEDIM> new_vector_state;
+	std::array<amrex::MultiFab, AMREX_SPACEDIM> old_vector_state;
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		amrex::BoxArray ba_fc = amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim));
+		new_vector_state[idim].define(ba_fc, dm, nvcomp_, nghost);
+		old_vector_state[idim].define(ba_fc, dm, nvcomp_, nghost);
+	}
+
 	FillPatch(level, time, new_state, 0, ncomp);
 	FillPatch(level, time, old_state, 0, ncomp); // also necessary
+
+	// fill patch for vector fields
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		FillPatchVector(level, time, new_vector_state[idim], idim, 0, nvcomp_);
+		FillPatchVector(level, time, old_vector_state[idim], idim, 0, nvcomp_);
+	}
 
 	std::swap(new_state, state_new_[level]);
 	std::swap(old_state, state_old_[level]);
 	std::swap(max_signal_speed, max_signal_speed_[level]);
+	std::swap(new_vector_state, vector_state_new_[level]);
+	std::swap(old_vector_state, vector_state_old_[level]);
 
 	tNew_[level] = time;
 	tOld_[level] = time - 1.e200;
@@ -553,6 +649,10 @@ void AMRSimulation<problem_t>::RemakeLevel(int level, amrex::Real time, const am
 		flux_reg_[level] = std::make_unique<amrex::FluxRegister>(
 		    ba, dm, refRatio(level - 1), level, ncomp_);
 #endif
+		// create vector field edge flux register
+		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
+		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
+		    refRatio(level - 1), level, nvcomp_);
 	}
 }
 
@@ -564,7 +664,12 @@ template <typename problem_t> void AMRSimulation<problem_t>::ClearLevel(int leve
 	state_new_[level].clear();
 	state_old_[level].clear();
 	max_signal_speed_[level].clear();
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		vector_state_new_[level][idim].clear();
+		vector_state_old_[level][idim].clear();
+	}
 	flux_reg_[level].reset(nullptr);
+	vector_flux_reg_[level].reset(nullptr);
 }
 
 // Make a new level from scratch using provided BoxArray and
@@ -584,6 +689,13 @@ void AMRSimulation<problem_t>::MakeNewLevelFromScratch(int level, amrex::Real ti
 	state_old_[level].define(ba, dm, ncomp, nghost);
 	max_signal_speed_[level].define(ba, dm, 1, nghost);
 
+	// define vector field arrays (face-centered)
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		amrex::BoxArray ba_fc = amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim));
+		vector_state_new_[level][idim].define(ba_fc, dm, nvcomp_, nghost);
+		vector_state_old_[level][idim].define(ba_fc, dm, nvcomp_, nghost);
+	}
+
 	tNew_[level] = time;
 	tOld_[level] = time - 1.e200;
 
@@ -596,16 +708,29 @@ void AMRSimulation<problem_t>::MakeNewLevelFromScratch(int level, amrex::Real ti
 		flux_reg_[level] = std::make_unique<amrex::FluxRegister>(
 		    ba, dm, refRatio(level - 1), level, ncomp_);
 #endif
+		// create vector field edge flux register
+		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
+		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
+		    refRatio(level - 1), level, nvcomp_);
 	}
 
 	// set state_new_[lev] to desired initial condition
 	setInitialConditionsAtLevel(level);
+	setInitialConditionsVectorAtLevel(level);
 
-	// fill ghost zones
+	// fill ghost zones for scalar field
 	fillBoundaryConditions(state_new_[level], state_new_[level], level, time);
+
+	// fill ghost zones for vector field
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		fillBoundaryConditionsVector(vector_state_new_[level][idim], vector_state_new_[level][idim], level, time, idim);
+	}
 
 	// copy to state_old_ (including ghost zones)
 	state_old_[level].ParallelCopy(state_new_[level], 0, 0, ncomp, nghost, nghost);
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		vector_state_old_[level][idim].ParallelCopy(vector_state_new_[level][idim], 0, 0, nvcomp_, nghost, nghost);
+	}
 }
 
 template <typename problem_t> struct setBoundaryFunctor {
@@ -835,6 +960,19 @@ auto AMRSimulation<problem_t>::PlotFileMF() const -> amrex::Vector<const amrex::
 	return r;
 }
 
+// put together an array of vector field multifabs for writing
+template <typename problem_t>
+auto AMRSimulation<problem_t>::PlotFileVectorMF() const -> amrex::Vector<amrex::Vector<const amrex::MultiFab *>>
+{
+	amrex::Vector<amrex::Vector<const amrex::MultiFab *>> r(AMREX_SPACEDIM);
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		for (int i = 0; i <= finest_level; ++i) {
+			r[idim].push_back(&vector_state_new_[i][idim]);
+		}
+	}
+	return r;
+}
+
 // write plotfile to disk
 template <typename problem_t> void AMRSimulation<problem_t>::WritePlotFile() const
 {
@@ -925,6 +1063,12 @@ template <typename problem_t> void AMRSimulation<problem_t>::WriteCheckpointFile
 	for (int lev = 0; lev <= finest_level; ++lev) {
 		amrex::VisMF::Write(state_new_[lev], amrex::MultiFabFileFullPrefix(
 							 lev, checkpointname, "Level_", "Cell"));
+		// write vector field data
+		for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+			std::string dimname = std::string("Vector") + std::to_string(idim) + "_";
+			amrex::VisMF::Write(vector_state_new_[lev][idim], amrex::MultiFabFileFullPrefix(
+								     lev, checkpointname, "Level_", dimname));
+		}
 	}
 }
 
@@ -1011,6 +1155,13 @@ template <typename problem_t> void AMRSimulation<problem_t>::ReadCheckpointFile(
 		state_new_[lev].define(grids[lev], dmap[lev], ncomp, nghost);
 		max_signal_speed_[lev].define(ba, dm, 1, nghost);
 
+		// define vector field arrays from checkpoint
+		for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+			amrex::BoxArray ba_fc = amrex::convert(ba, amrex::IntVect::TheDimensionVector(idim));
+			vector_state_old_[lev][idim].define(ba_fc, dm, nvcomp_, nghost);
+			vector_state_new_[lev][idim].define(ba_fc, dm, nvcomp_, nghost);
+		}
+
 		if (lev > 0 && (do_reflux != 0)) {
 #ifdef USE_YAFLUXREGISTER
 			flux_reg_[lev] = std::make_unique<amrex::YAFluxRegister>(
@@ -1027,8 +1178,164 @@ template <typename problem_t> void AMRSimulation<problem_t>::ReadCheckpointFile(
 	for (int lev = 0; lev <= finest_level; ++lev) {
 		amrex::VisMF::Read(state_new_[lev], amrex::MultiFabFileFullPrefix(
 							lev, restart_chkfile, "Level_", "Cell"));
+		// read vector field data
+		for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+			std::string dimname = std::string("Vector") + std::to_string(idim) + "_";
+			amrex::VisMF::Read(vector_state_new_[lev][idim], amrex::MultiFabFileFullPrefix(
+								        lev, restart_chkfile, "Level_", dimname));
+		}
 	}
 	areInitialConditionsDefined_ = true;
+}
+
+// Vector field AMR utility function implementations
+template <typename problem_t>
+void AMRSimulation<problem_t>::fillBoundaryConditionsVector(amrex::MultiFab &S_filled,
+							    amrex::MultiFab &state, int const lev,
+							    amrex::Real const time, int const idim)
+{
+	BL_PROFILE("AMRSimulation::fillBoundaryConditionsVector()");
+
+	amrex::Vector<amrex::MultiFab *> fineData{&state};
+	amrex::Vector<amrex::Real> fineTime = {time};
+	amrex::Vector<amrex::MultiFab *> coarseData;
+	amrex::Vector<amrex::Real> coarseTime;
+
+	if (lev > 0) {
+		GetDataVector(lev - 1, time, coarseData, coarseTime, idim);
+	}
+
+	AMREX_ASSERT(!state.contains_nan(0, state.nComp()));
+
+	for (int i = 0; i < coarseData.size(); ++i) {
+		AMREX_ASSERT(!coarseData[i]->contains_nan(0, state.nComp()));
+		AMREX_ASSERT(!coarseData[i]->contains_nan());
+	}
+
+	// Use face-centered interpolation for vector fields
+	amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>> boundaryFunctor(
+	    setBoundaryFunctor<problem_t>{});
+	amrex::PhysBCFunct<amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>>>
+	    finePhysicalBoundaryFunctor(geom[lev], boundaryConditions_, boundaryFunctor);
+
+	if (lev == 0) {
+		amrex::FillPatchSingleLevel(S_filled, time, fineData, fineTime, 0, 0, S_filled.nComp(),
+					    geom[lev], finePhysicalBoundaryFunctor, 0);
+	} else {
+		amrex::PhysBCFunct<amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>>>
+		    coarsePhysicalBoundaryFunctor(geom[lev - 1], boundaryConditions_,
+						  boundaryFunctor);
+
+		// Use face_linear_interp for face-centered data
+		amrex::Interpolater *mapper = &amrex::face_linear_interp;
+
+		amrex::FillPatchTwoLevels(S_filled, time, coarseData, coarseTime, fineData, fineTime, 0,
+					  0, S_filled.nComp(), geom[lev - 1], geom[lev],
+					  coarsePhysicalBoundaryFunctor, 0,
+					  finePhysicalBoundaryFunctor, 0, refRatio(lev - 1), mapper,
+					  boundaryConditions_, 0);
+	}
+
+	AMREX_ASSERT(!S_filled.contains_nan(0, S_filled.nComp()));
+}
+
+template <typename problem_t>
+void AMRSimulation<problem_t>::FillPatchVector(int lev, amrex::Real time, amrex::MultiFab &mf, 
+					       int idim, int icomp, int ncomp)
+{
+	BL_PROFILE("AMRSimulation::FillPatchVector()");
+
+	amrex::Vector<amrex::MultiFab *> cmf;
+	amrex::Vector<amrex::MultiFab *> fmf;
+	amrex::Vector<amrex::Real> ctime;
+	amrex::Vector<amrex::Real> ftime;
+
+	if (lev == 0) {
+		GetDataVector(lev, time, fmf, ftime, idim);
+	} else {
+		GetDataVector(lev, time, fmf, ftime, idim);
+		GetDataVector(lev - 1, time, cmf, ctime, idim);
+	}
+
+	// Use vector-specific fill patch with face-centered interpolation
+	fillBoundaryConditionsVector(mf, mf, lev, time, idim);
+}
+
+template <typename problem_t>
+void AMRSimulation<problem_t>::FillCoarsePatchVector(int lev, amrex::Real time, amrex::MultiFab &mf,
+						     int idim, int icomp, int ncomp)
+{
+	BL_PROFILE("AMRSimulation::FillCoarsePatchVector()");
+
+	AMREX_ASSERT(lev > 0);
+
+	amrex::Vector<amrex::MultiFab *> cmf;
+	amrex::Vector<amrex::Real> ctime;
+	GetDataVector(lev - 1, time, cmf, ctime, idim);
+	amrex::Interpolater *mapper = &amrex::face_linear_interp;
+
+	if (cmf.size() != 1) {
+		amrex::Abort("FillCoarsePatchVector: how did this happen?");
+	}
+
+	amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>> boundaryFunctor(
+	    setBoundaryFunctor<problem_t>{});
+	amrex::PhysBCFunct<amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>>>
+	    finePhysicalBoundaryFunctor(geom[lev], boundaryConditions_, boundaryFunctor);
+	amrex::PhysBCFunct<amrex::GpuBndryFuncFab<setBoundaryFunctor<problem_t>>>
+	    coarsePhysicalBoundaryFunctor(geom[lev - 1], boundaryConditions_, boundaryFunctor);
+
+	amrex::InterpFromCoarseLevel(mf, time, *cmf[0], 0, icomp, ncomp, geom[lev - 1], geom[lev],
+				     coarsePhysicalBoundaryFunctor, 0, finePhysicalBoundaryFunctor,
+				     0, refRatio(lev - 1), mapper, boundaryConditions_, 0);
+}
+
+template <typename problem_t>
+void AMRSimulation<problem_t>::GetDataVector(int lev, amrex::Real time,
+					     amrex::Vector<amrex::MultiFab *> &data,
+					     amrex::Vector<amrex::Real> &datatime, int idim)
+{
+	BL_PROFILE("AMRSimulation::GetDataVector()");
+
+	data.clear();
+	datatime.clear();
+
+	const amrex::Real teps =
+	    (tNew_[lev] - tOld_[lev]) * 1.e-3;
+
+	if (time > tNew_[lev] - teps &&
+	    time < tNew_[lev] + teps) {
+		data.push_back(&vector_state_new_[lev][idim]);
+		datatime.push_back(tNew_[lev]);
+	} else if (time > tOld_[lev] - teps &&
+		   time < tOld_[lev] + teps) {
+		data.push_back(&vector_state_old_[lev][idim]);
+		datatime.push_back(tOld_[lev]);
+	} else {
+		data.push_back(&vector_state_old_[lev][idim]);
+		data.push_back(&vector_state_new_[lev][idim]);
+		datatime.push_back(tOld_[lev]);
+		datatime.push_back(tNew_[lev]);
+	}
+}
+
+template <typename problem_t> void AMRSimulation<problem_t>::AverageDownVector()
+{
+	BL_PROFILE("AMRSimulation::AverageDownVector()");
+
+	for (int lev = finest_level - 1; lev >= 0; --lev) {
+		AverageDownToVector(lev);
+	}
+}
+
+template <typename problem_t> void AMRSimulation<problem_t>::AverageDownToVector(int crse_lev)
+{
+	BL_PROFILE("AMRSimulation::AverageDownToVector()");
+
+	for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+		amrex::average_down_faces(vector_state_new_[crse_lev + 1][idim], vector_state_new_[crse_lev][idim], 
+					  refRatio(crse_lev), geom[crse_lev]);
+	}
 }
 
 #endif // SIMULATION_HPP_
