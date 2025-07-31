@@ -41,6 +41,9 @@ template <typename problem_t> class LinearAdvectionSystem : public HyperbolicSys
 	static void ComputeFluxes(array_t &x1Flux, arrayconst_t &x1LeftState,
 				  arrayconst_t &x1RightState, double advectionVx,
 				  amrex::Box const &indexRange, int nvars);
+
+	// Inherit xPPM reconstruction from HyperbolicSystem
+	using HyperbolicSystem<problem_t>::ReconstructStatesPPM_EP;
 };
 
 template <typename problem_t>

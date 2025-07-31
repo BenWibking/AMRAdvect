@@ -23,6 +23,7 @@
 #include "AMReX_FabArrayUtility.H"
 #include "AMReX_IntVect.H"
 #include "AMReX_MultiFab.H"
+#include "AMReX_ParmParse.H"
 #include "AMReX_REAL.H"
 #include "AMReX_SPACE.H"
 #include "AMReX_TagBox.H"
@@ -68,6 +69,10 @@ template <typename problem_t> class AdvectionSimulation : public AMRSimulation<p
 	    : AMRSimulation<problem_t>(gridDims, boxSize, boundaryConditions, ncomp)
 	{
 		componentNames_ = {"density"};
+
+		// Parse reconstruction method from input file
+		amrex::ParmParse pp("advection");
+		pp.query("reconstruction_order", reconstructOrder_);
 	}
 
 	void computeMaxSignalLocal(int level) override;
@@ -91,8 +96,7 @@ template <typename problem_t> class AdvectionSimulation : public AMRSimulation<p
 	double advectionVy_ = 0.0; // default
 	double advectionVz_ = 0.0; // default
 
-	static constexpr int reconstructOrder_ =
-	    3; // PPM = 3 ['third order'], piecewise constant == 1
+	int reconstructOrder_ = 3; // PPM = 3 ['third order'], piecewise constant == 1, xPPM = 4
 	static constexpr int integratorOrder_ = 2; // RK2-SSP = 2, forward Euler = 1
 };
 
@@ -348,12 +352,17 @@ void AdvectionSimulation<problem_t>::fluxFunction(amrex::Array4<const amrex::Rea
 	LinearAdvectionSystem<problem_t>::ConservedToPrimitive(consState, primVar.array(),
 							       ghostRange, nvars);
 
-	if constexpr (reconstructOrder_ == 3) {
+	if (reconstructOrder_ == 3) {
 		// mixed interface/cell-centered kernel
 		LinearAdvectionSystem<problem_t>::template ReconstructStatesPPM<DIR>(
 		    primVar.array(), x1LeftState.array(), x1RightState.array(), reconstructRange,
 		    x1ReconstructRange, nvars);
-	} else if constexpr (reconstructOrder_ == 1) {
+	} else if (reconstructOrder_ == 4) {
+		// extrema-preserving PPM (xPPM)
+		LinearAdvectionSystem<problem_t>::template ReconstructStatesPPM_EP<DIR>(
+		    primVar.array(), x1LeftState.array(), x1RightState.array(), reconstructRange,
+		    x1ReconstructRange, nvars);
+	} else if (reconstructOrder_ == 1) {
 		// interface-centered kernel
 		LinearAdvectionSystem<problem_t>::template ReconstructStatesConstant<DIR>(
 		    primVar.array(), x1LeftState.array(), x1RightState.array(), x1ReconstructRange,

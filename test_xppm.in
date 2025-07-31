@@ -27,4 +27,4 @@ do_subcycle = 1
 # *****************************************************************
 # Advection parameters
 # *****************************************************************
-# advection.reconstruction_order = 3    # 1=constant, 3=PPM, 4=xPPM (default: 3)
+advection.reconstruction_order = 4    # 1=constant, 3=PPM, 4=xPPM
