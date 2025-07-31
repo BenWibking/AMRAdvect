@@ -486,9 +486,11 @@ void AMRSimulation<problem_t>::timeStepWithSubcycling(int lev, amrex::Real time,
 			
 			// reflux vector fields
 			if (vector_flux_reg_[lev + 1] != nullptr) {
+				std::array<amrex::MultiFab*, AMREX_SPACEDIM> B_crse;
 				for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-					vector_flux_reg_[lev + 1]->Reflux(vector_state_new_[lev][idim], 1.0, 0, 0, nvcomp_, geom[lev], idim);
+					B_crse[idim] = &vector_state_new_[lev][idim];
 				}
+				vector_flux_reg_[lev + 1]->Reflux(B_crse);
 			}
 		}
 
@@ -590,7 +592,7 @@ void AMRSimulation<problem_t>::MakeNewLevelFromCoarse(int level, amrex::Real tim
 		// create vector field edge flux register
 		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
 		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
-		    refRatio(level - 1), level, nvcomp_);
+		    geom[level], geom[level - 1], nvcomp_);
 	}
 
 	FillCoarsePatch(level, time, state_new_[level], 0, ncomp);
@@ -652,7 +654,7 @@ void AMRSimulation<problem_t>::RemakeLevel(int level, amrex::Real time, const am
 		// create vector field edge flux register
 		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
 		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
-		    refRatio(level - 1), level, nvcomp_);
+		    geom[level], geom[level - 1], nvcomp_);
 	}
 }
 
@@ -711,7 +713,7 @@ void AMRSimulation<problem_t>::MakeNewLevelFromScratch(int level, amrex::Real ti
 		// create vector field edge flux register
 		vector_flux_reg_[level] = std::make_unique<amrex::EdgeFluxRegister>(
 		    ba, boxArray(level - 1), dm, DistributionMap(level - 1),
-		    refRatio(level - 1), level, nvcomp_);
+		    geom[level], geom[level - 1], nvcomp_);
 	}
 
 	// set state_new_[lev] to desired initial condition

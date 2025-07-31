@@ -29,7 +29,7 @@
 
 // internal headers
 #include "ArrayView.hpp"
-#include "simulation.hpp"
+#include "math_impl.hpp"
 
 /// Provide type-safe global sign ('sgn') function.
 template <typename T> AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE auto sgn(T val) -> int

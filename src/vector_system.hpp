@@ -19,25 +19,22 @@
 #include "AMReX_BLProfiler.H"
 #include "AMReX_GpuControl.H"
 #include "AMReX_ParmParse.H"
-#include "hydro_system.hpp"
+
 #include "hyperbolic_system.hpp"
-#include "physics_info.hpp"
-#include "physics_numVars.hpp"
 
 AMREX_ENUM(VectorAvgType, Simple, Upwind); // NOLINT
 
 /// Class for a vector field advection system with constant velocity
 template <typename problem_t> class VectorSystem : public HyperbolicSystem<problem_t>
 {
+      using arrayconst_t = amrex::Array4<const amrex::Real> const;
+      using array_t = amrex::Array4<amrex::Real>;
+  
       public:
-	static constexpr int nvar_per_dim_ = Physics_NumVars::numMHDVars_per_dim;
-	static constexpr int nvar_tot_ = Physics_NumVars::numMHDVars_tot;
-
-	enum varIndex_perDim {
-		vector_index = Physics_Indices<problem_t>::mhdFirstIndex,
-	};
-
-	static void ComputeFlux(std::array<amrex::MultiFab, AMREX_SPACEDIM> &ec_mf_flux_components, amrex::MultiFab const &cc_mf_cVars,
+        constexpr static int vector_index = 0;
+        static constexpr int nvar_per_dim_ = 1; // number of components per dimension for vector field
+  
+        static void ComputeFlux(std::array<amrex::MultiFab, AMREX_SPACEDIM> &ec_mf_flux_components, amrex::MultiFab const &cc_mf_cVars,
 			       std::array<amrex::MultiFab, AMREX_SPACEDIM> const &fcx_mf_cVars, 
 			       amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> const &advection_velocity,
 			       int reconstructionOrder, VectorAvgType vector_avg_type);
@@ -100,8 +97,11 @@ void VectorSystem<problem_t>::ComputeFlux(std::array<amrex::MultiFab, AMREX_SPAC
 				const amrex::IntVect vec_cc2fc = amrex::IntVect::TheDimensionVector(wcomp);
 				const amrex::Box box_fc = amrex::convert(box_cc, vec_cc2fc);
 				// extrapolate face-centered vector components to the cell-edge
-				VectorSystem<problem_t>::ReconstructTo(dir2edge, fc_fabs_Vx[wcomp].array(), ec_fabs_Vi_ieside[icomp][0].array(),
-								    ec_fabs_Vi_ieside[icomp][1].array(), box_fc, reconstructionOrder);
+				auto fc_array = fc_fabs_Vx[wcomp].const_array();
+				auto lstate_array = ec_fabs_Vi_ieside[icomp][0].array();
+				auto rstate_array = ec_fabs_Vi_ieside[icomp][1].array();
+				VectorSystem<problem_t>::ReconstructTo(dir2edge, fc_array, lstate_array,
+								    rstate_array, box_fc, reconstructionOrder);
 			}
 
 			// extract both components of vector field either side of the cell-edge
@@ -149,37 +149,37 @@ void VectorSystem<problem_t>::ReconstructTo(FluxDir dir, arrayconst_t &cState, a
 		// note: only box_r is used. box_r_x1 is unused.
 		switch (dir) {
 			case FluxDir::X1:
-				VectorSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X1>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X1>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 			case FluxDir::X2:
-				VectorSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X2>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X2>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 			case FluxDir::X3:
-				VectorSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X3>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM_EP<FluxDir::X3>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 		}
 	} else if (reconstructionOrder == 3) {
 		switch (dir) {
 			case FluxDir::X1:
-				VectorSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X1>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X1>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 			case FluxDir::X2:
-				VectorSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X2>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X2>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 			case FluxDir::X3:
-				VectorSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X3>(cState, lState, rState, box_r, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesPPM<FluxDir::X3>(cState, lState, rState, box_r, box_r_x1, 1);
 				break;
 		}
 	} else if (reconstructionOrder == 1) {
 		switch (dir) {
 			case FluxDir::X1:
-				VectorSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X1>(cState, lState, rState, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X1>(cState, lState, rState, box_r_x1, 1);
 				break;
 			case FluxDir::X2:
-				VectorSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X2>(cState, lState, rState, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X2>(cState, lState, rState, box_r_x1, 1);
 				break;
 			case FluxDir::X3:
-				VectorSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X3>(cState, lState, rState, box_r_x1, 1);
+				HyperbolicSystem<problem_t>::template ReconstructStatesConstant<FluxDir::X3>(cState, lState, rState, box_r_x1, 1);
 				break;
 		}
 	} else {
@@ -235,9 +235,8 @@ void VectorSystem<problem_t>::SolveAdvectionEqn(std::array<amrex::MultiFab, AMRE
 			const double flux_w1_p = ec_flux_w1[bx](i + delta_w2[0], j + delta_w2[1], k + delta_w2[2]);
 			const double flux_w2_p = ec_flux_w2[bx](i + delta_w1[0], j + delta_w1[1], k + delta_w1[2]);
 			const double dv_dt = (dx1 * (flux_w1_m - flux_w1_p) + dx2 * (flux_w2_p - flux_w2_m)) / (dx1 * dx2);
-
-			fc_consVarNew[bx](i, j, k, Physics_Indices<problem_t>::mhdFirstIndex) =
-			    fc_consVarOld[bx](i, j, k, Physics_Indices<problem_t>::mhdFirstIndex) + dt * dv_dt;
+			
+			fc_consVarNew[bx](i, j, k, vector_index) = fc_consVarOld[bx](i, j, k, vector_index) + dt * dv_dt;
 		});
 	}
 }

@@ -83,6 +83,11 @@ template <typename problem_t> class AdvectionSimulation : public AMRSimulation<p
 	// tag cells for refinement
 	void ErrorEst(int lev, amrex::TagBoxArray &tags, amrex::Real time, int ngrow) override;
 
+	// vector field methods (required by base class)
+	void setInitialConditionsVectorAtLevel(int level) override;
+	void advanceVectorTimestepAtLevel(int lev, amrex::Real time, amrex::Real dt_lev,
+					  int iteration, int ncycle) override;
+
 	auto computeFluxes(amrex::Array4<const amrex::Real> const &consVar,
 			   const amrex::Box &indexRange, int nvars)
 	    -> std::array<amrex::FArrayBox, AMREX_SPACEDIM>;
@@ -129,6 +134,19 @@ void AdvectionSimulation<problem_t>::ErrorEst(int lev, amrex::TagBoxArray &tags,
 					      amrex::Real /*time*/, int /*ngrow*/)
 {
 	// tag cells for refinement -- implement in problem generator
+}
+
+template <typename problem_t>
+void AdvectionSimulation<problem_t>::setInitialConditionsVectorAtLevel(int level)
+{
+	// do nothing -- user should implement using problem-specific template specialization
+}
+
+template <typename problem_t>
+void AdvectionSimulation<problem_t>::advanceVectorTimestepAtLevel(int lev, amrex::Real time, amrex::Real dt_lev,
+								  int iteration, int ncycle)
+{
+	// do nothing -- user should implement using problem-specific template specialization
 }
 
 template <typename problem_t>
