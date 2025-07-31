@@ -24,7 +24,6 @@
 #include "AMReX_REAL.H"
 
 #include "AdvectionSimulation.hpp"
-#include "test_advection2d.hpp"
 
 struct SquareProblem {
 };
