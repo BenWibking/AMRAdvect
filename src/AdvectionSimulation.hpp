@@ -50,6 +50,7 @@ template <typename problem_t> class AdvectionSimulation : public AMRSimulation<p
 	using AMRSimulation<problem_t>::cycleCount_;
 	using AMRSimulation<problem_t>::areInitialConditionsDefined_;
 	using AMRSimulation<problem_t>::componentNames_;
+	using AMRSimulation<problem_t>::vectorComponentNames_;
 
 	using AMRSimulation<problem_t>::fillBoundaryConditions;
 	using AMRSimulation<problem_t>::geom;
@@ -69,6 +70,7 @@ template <typename problem_t> class AdvectionSimulation : public AMRSimulation<p
 	    : AMRSimulation<problem_t>(gridDims, boxSize, boundaryConditions, ncomp)
 	{
 		componentNames_ = {"density"};
+		vectorComponentNames_ = {"vector_x", "vector_y", "vector_z"};
 
 		// Parse reconstruction method from input file
 		amrex::ParmParse pp("advection");

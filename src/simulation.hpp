@@ -176,6 +176,7 @@ template <typename problem_t> class AMRSimulation : public amrex::AmrCore
 	[[nodiscard]] auto PlotFileName(int lev) const -> std::string;
 	[[nodiscard]] auto PlotFileMF() const -> amrex::Vector<const amrex::MultiFab *>;
 	[[nodiscard]] auto PlotFileVectorMF() const -> amrex::Vector<amrex::Vector<const amrex::MultiFab *>>;
+	[[nodiscard]] auto ComputeCellCenteredVectorField() const -> amrex::Vector<amrex::MultiFab>;
 	void WritePlotFile() const;
 	void WriteCheckpointFile() const;
 	void ReadCheckpointFile();
@@ -975,16 +976,80 @@ auto AMRSimulation<problem_t>::PlotFileVectorMF() const -> amrex::Vector<amrex::
 	return r;
 }
 
+// compute cell-centered vector field from face-centered data
+template <typename problem_t>
+auto AMRSimulation<problem_t>::ComputeCellCenteredVectorField() const -> amrex::Vector<amrex::MultiFab>
+{
+	amrex::Vector<amrex::MultiFab> vector_cc(finest_level + 1);
+	
+	for (int lev = 0; lev <= finest_level; ++lev) {
+		const amrex::BoxArray& ba = grids[lev];
+		const amrex::DistributionMapping& dm = dmap[lev];
+		
+		// Create cell-centered MultiFab with AMREX_SPACEDIM components (one for each vector component)
+		vector_cc[lev].define(ba, dm, AMREX_SPACEDIM, 0);
+		
+		// Interpolate face-centered data to cell centers
+		for (amrex::MFIter mfi(vector_cc[lev]); mfi.isValid(); ++mfi) {
+			const amrex::Box& bx = mfi.validbox();
+			const auto& cc_array = vector_cc[lev][mfi].array();
+			
+			for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+				const auto& fc_array = vector_state_new_[lev][idim][mfi].const_array();
+				
+				amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) {
+					// Average from face-centered to cell-centered
+					if (idim == 0) { // x-component
+						cc_array(i,j,k,idim) = 0.5 * (fc_array(i,j,k,0) + fc_array(i+1,j,k,0));
+					} else if (idim == 1) { // y-component  
+						cc_array(i,j,k,idim) = 0.5 * (fc_array(i,j,k,0) + fc_array(i,j+1,k,0));
+					} else { // z-component
+						cc_array(i,j,k,idim) = 0.5 * (fc_array(i,j,k,0) + fc_array(i,j,k+1,0));
+					}
+				});
+			}
+		}
+	}
+	
+	return vector_cc;
+}
+
 // write plotfile to disk
 template <typename problem_t> void AMRSimulation<problem_t>::WritePlotFile() const
 {
 	const std::string &plotfilename = PlotFileName(istep[0]);
-	const auto &mf = PlotFileMF();
-	const auto &varnames = componentNames_;
+	const auto &scalar_mf = PlotFileMF();
+	
+	// Get cell-centered vector field data
+	auto vector_cc = ComputeCellCenteredVectorField();
+	
+	// Create combined MultiFabs with both scalar and vector data
+	amrex::Vector<amrex::MultiFab> combined_mf(finest_level + 1);
+	amrex::Vector<const amrex::MultiFab *> combined_mf_ptrs(finest_level + 1);
+	
+	for (int lev = 0; lev <= finest_level; ++lev) {
+		const int ncomp_scalar = scalar_mf[lev]->nComp();
+		const int ncomp_vector = AMREX_SPACEDIM;
+		const int ncomp_total = ncomp_scalar + ncomp_vector;
+		
+		combined_mf[lev].define(grids[lev], dmap[lev], ncomp_total, 0);
+		
+		// Copy scalar data
+		amrex::MultiFab::Copy(combined_mf[lev], *scalar_mf[lev], 0, 0, ncomp_scalar, 0);
+		
+		// Copy vector data
+		amrex::MultiFab::Copy(combined_mf[lev], vector_cc[lev], 0, ncomp_scalar, ncomp_vector, 0);
+		
+		combined_mf_ptrs[lev] = &combined_mf[lev];
+	}
+	
+	// Create combined variable names
+	amrex::Vector<std::string> combined_varnames = componentNames_;
+	combined_varnames.insert(combined_varnames.end(), vectorComponentNames_.begin(), vectorComponentNames_.end());
 
 	amrex::Print() << "Writing plotfile " << plotfilename << "\n";
 
-	amrex::WriteMultiLevelPlotfile(plotfilename, finest_level + 1, mf, varnames, Geom(),
+	amrex::WriteMultiLevelPlotfile(plotfilename, finest_level + 1, combined_mf_ptrs, combined_varnames, Geom(),
 				       tNew_[0], istep, refRatio());
 }
 
